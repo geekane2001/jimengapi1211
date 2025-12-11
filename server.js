@@ -11,10 +11,12 @@ const crypto = require('node:crypto')
 const fs = require('node:fs')
 const path = require('node:path')
 const axios = require('axios')
+const cors = require('cors')
 const express = require('express')
 const multer = require('multer')
 
 const app = express()
+app.use(cors())
 const upload = multer({ dest: 'uploads/' })
 
 // ================= 配置区域 =================
