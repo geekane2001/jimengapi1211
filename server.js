@@ -355,8 +355,17 @@ async function generate(imageUri, promptText) {
 
     if (record && record.status === 50) {
       console.log('\n🎉 生成完成！')
-      // 返回所有生成的图片 URL
-      return record.item_list.map(item => item.image.large_images[0].image_url)
+      const urls = record.item_list.map(item => item.image.large_images[0].image_url)
+      // 优先将 p3 域名的图片排在前面 (p26 容易 403)
+      return urls.sort((a, b) => {
+        const aIsP3 = a.includes('p3-dreamina-sign.byteimg.com')
+        const bIsP3 = b.includes('p3-dreamina-sign.byteimg.com')
+        if (aIsP3 && !bIsP3)
+          return -1
+        if (!aIsP3 && bIsP3)
+          return 1
+        return 0
+      })
     }
     else if (record && record.status === 30) {
       throw new Error(`生成失败，错误码: ${record.fail_code}`)
