@@ -22,7 +22,7 @@ const upload = multer({ dest: 'uploads/' })
 // ================= 配置区域 =================
 // 默认 Token，也可通过环境变量 JIMENG_TOKEN 传入
 const JIMENG_TOKEN = process.env.JIMENG_TOKEN || '304d66838b09f810b70e2c14a81978f9'
-const BLEND_MODEL_ID = 'high_aes_general_v41' // 4.1 版本
+const BLEND_MODEL_ID = 'high_aes_general_v40' // 4.0 版本
 // ===========================================
 
 // --- 基础工具 ---
