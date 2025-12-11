@@ -22,7 +22,8 @@ const upload = multer({ dest: 'uploads/' })
 // ================= 配置区域 =================
 // 默认 Token，也可通过环境变量 JIMENG_TOKEN 传入 (支持逗号分隔的多账号轮询)
 const JIMENG_TOKENS = (process.env.JIMENG_TOKEN || '304d66838b09f810b70e2c14a81978f9').split(',').map(t => t.trim()).filter(t => t)
-const BLEND_MODEL_ID = 'high_aes_general_v40' // 4.1 版本
+const BLEND_MODEL_V40 = 'high_aes_general_v40' // 4.0 版本 (高速)
+const BLEND_MODEL_V41 = 'high_aes_general_v41' // 4.1 版本 (高质量)
 let currentTokenIndex = 0
 
 // 获取下一个 Token (轮询)
@@ -229,8 +230,8 @@ async function uploadImage(filePath, token) {
 }
 
 // 2. 生成图片 (图生图)
-async function generate(imageUri, promptText, token) {
-  console.log(`🎨 开始生成任务，参考图URI: ${imageUri}，提示词: ${promptText}`)
+async function generate(imageUri, promptText, token, modelId = BLEND_MODEL_V40) {
+  console.log(`🎨 开始生成任务，参考图URI: ${imageUri}，提示词: ${promptText}，模型: ${modelId}`)
 
   const componentId = generateUuid()
   const submitId = generateUuid()
@@ -267,7 +268,7 @@ async function generate(imageUri, promptText, token) {
           core_param: {
             type: '',
             id: generateUuid(),
-            model: BLEND_MODEL_ID,
+            model: modelId,
             prompt: promptText, // 使用传入的提示词
             sample_strength: 0.5,
             image_ratio: 1,
@@ -320,7 +321,7 @@ async function generate(imageUri, promptText, token) {
   }
 
   const data = {
-    extend: { root_model: BLEND_MODEL_ID },
+    extend: { root_model: modelId },
     submit_id: submitId,
     metrics_extra: jsonEncode({
       promptSource: 'custom',
@@ -396,8 +397,12 @@ app.post('/generate', upload.single('image'), async (req, res) => {
     return res.status(400).json({ error: '请提供提示词' })
   }
 
+  // 获取模型参数，默认使用 v40 (高速)
+  const useHighQuality = req.body.highQuality === 'true' || req.body.highQuality === true
+  const modelId = useHighQuality ? BLEND_MODEL_V41 : BLEND_MODEL_V40
+
   const filePath = req.file.path
-  console.log(`收到请求: 图片=${req.file.originalname}, 提示词=${prompt}`)
+  console.log(`收到请求: 图片=${req.file.originalname}, 提示词=${prompt}, 模型=${modelId}`)
 
   try {
     // 获取本次任务使用的 Token (轮询)
@@ -407,7 +412,7 @@ app.post('/generate', upload.single('image'), async (req, res) => {
     // 1. Upload
     const uri = await uploadImage(filePath, token)
     // 2. Generate
-    const imageUrls = await generate(uri, prompt, token)
+    const imageUrls = await generate(uri, prompt, token, modelId)
 
     // Clean up file
     fs.unlinkSync(filePath)
