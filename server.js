@@ -20,9 +20,17 @@ app.use(cors())
 const upload = multer({ dest: 'uploads/' })
 
 // ================= 配置区域 =================
-// 默认 Token，也可通过环境变量 JIMENG_TOKEN 传入
-const JIMENG_TOKEN = process.env.JIMENG_TOKEN || '304d66838b09f810b70e2c14a81978f9'
-const BLEND_MODEL_ID = 'high_aes_general_v40' // 4.0 版本
+// 默认 Token，也可通过环境变量 JIMENG_TOKEN 传入 (支持逗号分隔的多账号轮询)
+const JIMENG_TOKENS = (process.env.JIMENG_TOKEN || '304d66838b09f810b70e2c14a81978f9').split(',').map(t => t.trim()).filter(t => t)
+const BLEND_MODEL_ID = 'high_aes_general_v41' // 4.1 版本
+let currentTokenIndex = 0
+
+// 获取下一个 Token (轮询)
+function getNextToken() {
+  const token = JIMENG_TOKENS[currentTokenIndex]
+  currentTokenIndex = (currentTokenIndex + 1) % JIMENG_TOKENS.length
+  return token
+}
 // ===========================================
 
 // --- 基础工具 ---
@@ -48,22 +56,25 @@ function crc32(buffer) {
   return ((crc ^ (-1)) >>> 0).toString(16)
 }
 
-function generateCookie() {
+function generateCookie(token) {
   const WEB_ID = (Math.random() * 1e18 + 7e18).toString()
   const USER_ID = generateUuid().replace(/-/g, '')
   return [
-    `sessionid=${JIMENG_TOKEN}`,
-    `sessionid_ss=${JIMENG_TOKEN}`,
-    `sid_tt=${JIMENG_TOKEN}`,
+    `sessionid=${token}`,
+    `sessionid_ss=${token}`,
+    `sid_tt=${token}`,
     `uid_tt=${USER_ID}`,
     `_tea_web_id=${WEB_ID}`,
   ].join('; ')
 }
 
 // 请求封装
-async function request(method, urlPath, data = {}, params = {}, extraHeaders = {}) {
+async function request(method, urlPath, data = {}, params = {}, extraHeaders = {}, token) {
   const baseUrl = 'https://jimeng.jianying.com'
   const url = urlPath.startsWith('http') ? urlPath : `${baseUrl}${urlPath}`
+
+  // 如果没有传入 token，尝试获取默认或下一个（仅作为兜底，正常业务逻辑应传入）
+  const activeToken = token || getNextToken()
 
   const headers = {
     'Accept': 'application/json, text/plain, */*',
@@ -78,7 +89,7 @@ async function request(method, urlPath, data = {}, params = {}, extraHeaders = {
     'Origin': 'https://jimeng.jianying.com',
     'Referer': 'https://jimeng.jianying.com/ai-tool/generate/?type=image',
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-    'Cookie': generateCookie(),
+    'Cookie': generateCookie(activeToken),
     ...extraHeaders,
   }
 
@@ -154,13 +165,13 @@ async function imagexRequest(method, url, params, headers, data) {
 }
 
 // 1. 上传图片
-async function uploadImage(filePath) {
+async function uploadImage(filePath, token) {
   console.log('📡 [1/4] 正在获取上传凭证...')
   const authRes = await request('POST', '/mweb/v1/get_upload_token', { scene: 2 }, {
     aid: 513695,
     da_version: '3.3.4',
     aigc_features: 'app_lip_sync',
-  })
+  }, token)
 
   const auth = authRes.data
   if (!auth)
@@ -211,14 +222,14 @@ async function uploadImage(filePath) {
     web_version: '7.5.0',
     da_version: '3.3.4',
     aigc_features: 'app_lip_sync',
-  })
+  }, token)
   console.log('✅ 审核提交成功')
 
   return uri
 }
 
 // 2. 生成图片 (图生图)
-async function generate(imageUri, promptText) {
+async function generate(imageUri, promptText, token) {
   console.log(`🎨 开始生成任务，参考图URI: ${imageUri}，提示词: ${promptText}`)
 
   const componentId = generateUuid()
@@ -334,7 +345,7 @@ async function generate(imageUri, promptText) {
     aigc_features: 'app_lip_sync',
   }
 
-  const res = await request('POST', '/mweb/v1/aigc_draft/generate', data, params)
+  const res = await request('POST', '/mweb/v1/aigc_draft/generate', data, params, {}, token)
 
   if (!res.data?.aigc_data?.history_record_id) {
     console.error('❌ 任务提交响应:', JSON.stringify(res))
@@ -350,7 +361,7 @@ async function generate(imageUri, promptText) {
     const pollRes = await request('POST', '/mweb/v1/get_history_by_ids', {
       history_ids: [historyId],
       http_common_info: { aid: 513695 },
-    })
+    }, {}, token)
     const record = pollRes.data[historyId]
 
     if (record && record.status === 50) {
@@ -389,10 +400,14 @@ app.post('/generate', upload.single('image'), async (req, res) => {
   console.log(`收到请求: 图片=${req.file.originalname}, 提示词=${prompt}`)
 
   try {
+    // 获取本次任务使用的 Token (轮询)
+    const token = getNextToken()
+    // console.log(`使用 Token: ${token.slice(0, 6)}...`)
+
     // 1. Upload
-    const uri = await uploadImage(filePath)
+    const uri = await uploadImage(filePath, token)
     // 2. Generate
-    const imageUrls = await generate(uri, prompt)
+    const imageUrls = await generate(uri, prompt, token)
 
     // Clean up file
     fs.unlinkSync(filePath)
