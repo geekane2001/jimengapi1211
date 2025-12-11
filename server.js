@@ -410,6 +410,37 @@ app.post('/generate', upload.single('image'), async (req, res) => {
 
 app.get('/health', (req, res) => res.send('OK'))
 
+// 图片代理接口 (解决 403 问题)
+app.get('/proxy-image', async (req, res) => {
+  const imageUrl = req.query.url
+  if (!imageUrl) {
+    return res.status(400).send('Missing url parameter')
+  }
+
+  try {
+    const response = await axios({
+      method: 'GET',
+      url: imageUrl,
+      responseType: 'stream',
+      headers: {
+        'Referer': 'https://jimeng.jianying.com/', // 伪造 Referer
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      },
+    })
+
+    // 透传 Content-Type
+    res.set('Content-Type', response.headers['content-type'])
+    // 缓存控制
+    res.set('Cache-Control', 'public, max-age=31536000')
+
+    response.data.pipe(res)
+  }
+  catch (error) {
+    console.error('Proxy error:', error.message)
+    res.status(500).send('Proxy error')
+  }
+})
+
 const PORT = process.env.PORT || 3000
 app.listen(PORT, () => {
   console.log(`Server listening on port ${PORT}`)
