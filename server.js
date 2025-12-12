@@ -24,6 +24,7 @@ const upload = multer({ dest: 'uploads/' })
 const JIMENG_TOKENS = (process.env.JIMENG_TOKEN || '304d66838b09f810b70e2c14a81978f9').split(',').map(t => t.trim()).filter(t => t)
 const BLEND_MODEL_V40 = 'high_aes_general_v40' // 4.0 版本 (高速)
 const BLEND_MODEL_V41 = 'high_aes_general_v41' // 4.1 版本 (高质量)
+const BLEND_MODEL_V40L = 'high_aes_general_v40l' // 4.0L 版本 (高质量备选)
 let currentTokenIndex = 0
 
 // 获取下一个 Token (轮询)
@@ -399,7 +400,12 @@ app.post('/generate', upload.single('image'), async (req, res) => {
 
   // 获取模型参数，默认使用 v40 (高速)
   const useHighQuality = req.body.highQuality === 'true' || req.body.highQuality === true
-  const modelId = useHighQuality ? BLEND_MODEL_V41 : BLEND_MODEL_V40
+
+  let modelId = BLEND_MODEL_V40
+  if (useHighQuality) {
+    // 高质量模式下，随机选择 v41 或 v40l
+    modelId = Math.random() > 0.5 ? BLEND_MODEL_V41 : BLEND_MODEL_V40L
+  }
 
   const filePath = req.file.path
   console.log(`收到请求: 图片=${req.file.originalname}, 提示词=${prompt}, 模型=${modelId}`)
