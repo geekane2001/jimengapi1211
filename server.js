@@ -14,17 +14,34 @@ const axios = require('axios')
 const cors = require('cors')
 const express = require('express')
 const multer = require('multer')
+const { Pool } = require('pg')
 
 const app = express()
 app.use(cors())
+app.use(express.json())
 const upload = multer({ dest: 'uploads/' })
 
+// PostgreSQL 连接池
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+})
+
 // ================= 配置区域 =================
-// 默认 Token，也可通过环境变量 JIMENG_TOKEN 传入 (支持逗号分隔的多账号轮询)
+// 即梦 API Token
 const JIMENG_TOKENS = (process.env.JIMENG_TOKEN || '304d66838b09f810b70e2c14a81978f9').split(',').map(t => t.trim()).filter(t => t)
 const BLEND_MODEL_V40 = 'high_aes_general_v40' // 4.0 版本 (高速)
 const BLEND_MODEL_V41 = 'high_aes_general_v41' // 4.1 版本 (高质量)
 let currentTokenIndex = 0
+
+// 微信小程序配置
+const WECHAT_APPID = process.env.WECHAT_APPID || 'your_wechat_appid'
+const WECHAT_SECRET = process.env.WECHAT_SECRET || 'your_wechat_secret'
+
+// JWT 配置
+const JWT_SECRET = process.env.JWT_SECRET || 'your_jwt_secret_change_this'
+const ACCESS_TOKEN_EXPIRES = 7200 // 2小时
+const REFRESH_TOKEN_EXPIRES = 2592000 // 30天
 
 // 获取下一个 Token (轮询)
 function getNextToken() {
@@ -42,6 +59,91 @@ function generateUuid() {
     (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16))
 }
 const jsonEncode = obj => JSON.stringify(obj)
+
+// 生成随机头像
+function getRandomAvatar() {
+  const styles = ['adventurer', 'avataaars', 'bottts', 'fun-emoji', 'lorelei', 'micah', 'miniavs', 'pixel-art']
+  const style = styles[Math.floor(Math.random() * styles.length)]
+  const seed = Math.random().toString(36).substring(7)
+  return `https://api.dicebear.com/7.x/${style}/svg?seed=${seed}`
+}
+
+// JWT 编码
+function encodeJWT(payload, secret) {
+  const header = { alg: 'HS256', typ: 'JWT' }
+  const encodedHeader = Buffer.from(JSON.stringify(header)).toString('base64url')
+  const encodedPayload = Buffer.from(JSON.stringify(payload)).toString('base64url')
+  const message = `${encodedHeader}.${encodedPayload}`
+  
+  const signature = crypto.createHmac('sha256', secret).update(message).digest('base64url')
+  return `${message}.${signature}`
+}
+
+// JWT 解码
+function decodeJWT(token, secret) {
+  try {
+    const [encodedHeader, encodedPayload, signature] = token.split('.')
+    const message = `${encodedHeader}.${encodedPayload}`
+    
+    const expectedSignature = crypto.createHmac('sha256', secret).update(message).digest('base64url')
+    if (signature !== expectedSignature) return null
+    
+    const payload = JSON.parse(Buffer.from(encodedPayload, 'base64url').toString())
+    if (payload.exp && payload.exp < Date.now() / 1000) return null
+    
+    return payload
+  } catch (e) {
+    return null
+  }
+}
+
+// 生成 Token 对
+function generateTokens(userId) {
+  const now = Math.floor(Date.now() / 1000)
+  
+  const accessToken = encodeJWT({
+    userId,
+    type: 'access',
+    iat: now,
+    exp: now + ACCESS_TOKEN_EXPIRES
+  }, JWT_SECRET)
+  
+  const refreshToken = encodeJWT({
+    userId,
+    type: 'refresh',
+    iat: now,
+    exp: now + REFRESH_TOKEN_EXPIRES
+  }, JWT_SECRET)
+  
+  return {
+    accessToken,
+    refreshToken,
+    accessExpiresIn: ACCESS_TOKEN_EXPIRES,
+    refreshExpiresIn: REFRESH_TOKEN_EXPIRES
+  }
+}
+
+// 验证 Token
+function verifyToken(req) {
+  const authHeader = req.headers.authorization
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return null
+  }
+  
+  const token = authHeader.substring(7)
+  const payload = decodeJWT(token, JWT_SECRET)
+  
+  if (!payload || payload.type !== 'access') {
+    return null
+  }
+  
+  return payload
+}
+
+// JSON 响应
+function jsonResponse(res, data, status = 200) {
+  return res.status(status).json(data)
+}
 
 function crc32(buffer) {
   const table = new Uint32Array(256)
@@ -387,7 +489,269 @@ async function generate(imageUri, promptText, token, modelId = BLEND_MODEL_V40) 
   throw new Error('生成超时')
 }
 
+// ================= 数据库操作 =================
+
+// 获取或创建用户
+async function getOrCreateUser(openid, sessionKey) {
+  const client = await pool.connect()
+  try {
+    // 查找用户
+    let result = await client.query('SELECT * FROM users WHERE openid = $1', [openid])
+    
+    if (result.rows.length > 0) {
+      // 更新 session_key 和最后登录时间
+      await client.query(
+        'UPDATE users SET session_key = $1, last_login_at = CURRENT_TIMESTAMP WHERE id = $2',
+        [sessionKey, result.rows[0].id]
+      )
+      return result.rows[0]
+    }
+    
+    // 创建新用户
+    const avatar = getRandomAvatar()
+    result = await client.query(
+      `INSERT INTO users (openid, session_key, nickname, avatar, created_at, last_login_at) 
+       VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) RETURNING *`,
+      [openid, sessionKey, '微信用户', avatar]
+    )
+    
+    return result.rows[0]
+  } finally {
+    client.release()
+  }
+}
+
+// 获取用户信息
+async function getUserById(userId) {
+  const result = await pool.query(
+    'SELECT id, openid, nickname, avatar, level, works_count, likes_count, created_at FROM users WHERE id = $1',
+    [userId]
+  )
+  return result.rows[0]
+}
+
+// 获取用户卡券
+async function getUserCoupons(userId) {
+  const result = await pool.query(
+    `SELECT c.*, ct.name as type_name, ct.icon, ct.color, ct.description, ct.amount
+     FROM coupons c 
+     JOIN coupon_types ct ON c.type_id = ct.id 
+     WHERE c.user_id = $1 AND c.status = 'active' AND c.expire_at > CURRENT_TIMESTAMP
+     ORDER BY c.expire_at ASC`,
+    [userId]
+  )
+  return result.rows
+}
+
+// 创建卡券
+async function createCoupon(userId, typeId, expireDays = 30) {
+  const expireAt = new Date()
+  expireAt.setDate(expireAt.getDate() + expireDays)
+  
+  await pool.query(
+    `INSERT INTO coupons (user_id, type_id, status, expire_at, created_at) 
+     VALUES ($1, $2, 'active', $3, CURRENT_TIMESTAMP)`,
+    [userId, typeId, expireAt.toISOString()]
+  )
+}
+
 // ================= API 路由 =================
+
+// 健康检查
+app.get('/health', (req, res) => {
+  jsonResponse(res, { 
+    code: 200, 
+    msg: 'AI Poster API is running',
+    data: { status: 'ok', version: '1.0.0' }
+  })
+})
+
+// 微信登录
+app.post('/login', async (req, res) => {
+  try {
+    const { code } = req.body
+    
+    if (!code) {
+      return jsonResponse(res, { code: 400, msg: '缺少 code 参数', data: null }, 400)
+    }
+    
+    // 调用微信接口获取 openid 和 session_key
+    const wxUrl = `https://api.weixin.qq.com/sns/jscode2session?appid=${WECHAT_APPID}&secret=${WECHAT_SECRET}&js_code=${code}&grant_type=authorization_code`
+    const wxRes = await axios.get(wxUrl)
+    const wxData = wxRes.data
+    
+    if (wxData.errcode) {
+      console.error('微信登录失败:', wxData)
+      return jsonResponse(res, { 
+        code: 400,
+        msg: `微信登录失败: ${wxData.errmsg}`,
+        data: null
+      }, 400)
+    }
+    
+    const { openid, session_key } = wxData
+    
+    // 获取或创建用户
+    const user = await getOrCreateUser(openid, session_key)
+    
+    // 生成 Token
+    const tokens = generateTokens(user.id)
+    
+    // 检查是否是新用户，如果是则赠送新人券
+    const isNewUser = !user.last_login_at || user.last_login_at === user.created_at
+    if (isNewUser) {
+      await createCoupon(user.id, 1, 30) // 赠送 3 元网费券
+    }
+    
+    jsonResponse(res, {
+      code: 200,
+      msg: 'success',
+      data: tokens
+    })
+  } catch (error) {
+    console.error('登录错误:', error)
+    jsonResponse(res, { 
+      code: 500,
+      msg: error.message,
+      data: null
+    }, 500)
+  }
+})
+
+// 刷新 Token
+app.post('/auth/refreshToken', async (req, res) => {
+  try {
+    const { refreshToken } = req.body
+    
+    if (!refreshToken) {
+      return jsonResponse(res, { code: 400, msg: '缺少 refreshToken', data: null }, 400)
+    }
+    
+    const payload = decodeJWT(refreshToken, JWT_SECRET)
+    if (!payload || payload.type !== 'refresh') {
+      return jsonResponse(res, { code: 401, msg: '无效的 refreshToken', data: null }, 401)
+    }
+    
+    // 生成新的 Token 对
+    const tokens = generateTokens(payload.userId)
+    
+    jsonResponse(res, {
+      code: 200,
+      msg: 'success',
+      data: tokens
+    })
+  } catch (error) {
+    jsonResponse(res, { code: 500, msg: error.message, data: null }, 500)
+  }
+})
+
+// 获取用户信息
+app.get('/user/info', async (req, res) => {
+  const payload = verifyToken(req)
+  if (!payload) {
+    return jsonResponse(res, { code: 401, msg: '未授权', data: null }, 401)
+  }
+  
+  try {
+    const user = await getUserById(payload.userId)
+    if (!user) {
+      return jsonResponse(res, { code: 404, msg: '用户不存在', data: null }, 404)
+    }
+    
+    jsonResponse(res, {
+      code: 200,
+      msg: 'success',
+      data: {
+        userId: user.id,
+        username: user.openid,
+        nickname: user.nickname,
+        avatar: user.avatar,
+        level: user.level,
+        worksCount: user.works_count,
+        likesCount: user.likes_count
+      }
+    })
+  } catch (error) {
+    jsonResponse(res, { code: 500, msg: error.message, data: null }, 500)
+  }
+})
+
+// 获取用户卡券
+app.get('/user/coupons', async (req, res) => {
+  const payload = verifyToken(req)
+  if (!payload) {
+    return jsonResponse(res, { code: 401, msg: '未授权', data: null }, 401)
+  }
+  
+  try {
+    const coupons = await getUserCoupons(payload.userId)
+    
+    jsonResponse(res, {
+      code: 200,
+      msg: 'success',
+      data: coupons.map(c => ({
+        id: c.id,
+        typeName: c.type_name,
+        amount: c.amount,
+        icon: c.icon,
+        color: c.color,
+        description: c.description,
+        expireAt: c.expire_at,
+        status: c.status
+      }))
+    })
+  } catch (error) {
+    jsonResponse(res, { code: 500, msg: error.message, data: null }, 500)
+  }
+})
+
+// 使用卡券
+app.post('/user/coupons/use', async (req, res) => {
+  const payload = verifyToken(req)
+  if (!payload) {
+    return jsonResponse(res, { code: 401, msg: '未授权', data: null }, 401)
+  }
+  
+  try {
+    const { couponId } = req.body
+    
+    // 验证卡券归属
+    const result = await pool.query(
+      'SELECT * FROM coupons WHERE id = $1 AND user_id = $2',
+      [couponId, payload.userId]
+    )
+    
+    if (result.rows.length === 0) {
+      return jsonResponse(res, { code: 404, msg: '卡券不存在', data: null }, 404)
+    }
+    
+    const coupon = result.rows[0]
+    if (coupon.status !== 'active') {
+      return jsonResponse(res, { code: 400, msg: '卡券已使用或已过期', data: null }, 400)
+    }
+    
+    // 更新卡券状态
+    await pool.query(
+      'UPDATE coupons SET status = $1, used_at = CURRENT_TIMESTAMP WHERE id = $2',
+      ['used', couponId]
+    )
+    
+    jsonResponse(res, {
+      code: 200,
+      msg: '卡券使用成功',
+      data: { message: '卡券使用成功' }
+    })
+  } catch (error) {
+    jsonResponse(res, { code: 500, msg: error.message, data: null }, 500)
+  }
+})
+
+// 退出登录
+app.post('/auth/logout', (req, res) => {
+  jsonResponse(res, { code: 200, msg: '退出成功', data: null })
+})
+
+// 图片生成接口
 app.post('/generate', upload.single('image'), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: '请上传图片' })
