@@ -841,21 +841,22 @@ async function downloadImage(url, dest) {
     fs.writeFileSync(dest, response.data);
 }
 
-// FFmpeg 视频合成工具 (集成 ffmpeg-static)
+// FFmpeg 视频合成工具
 const ffmpeg = require('fluent-ffmpeg');
-const ffmpegPath = require('ffmpeg-static');
-ffmpeg.setFfmpegPath(ffmpegPath);
 
 async function createTransitionVideo(img1, img2, outputFile) {
     return new Promise((resolve, reject) => {
+        // 使用系统原生 ffmpeg (在 Dockerfile 中通过 apk add 安装)
         ffmpeg()
-            .input(img1).loop(2.5)
-            .input(img2).loop(2.5)
+            .input(img1).inputOptions(['-loop 1', '-t 2.5'])
+            .input(img2).inputOptions(['-loop 1', '-t 2.5'])
             .complexFilter([
-                '[0:v]fade=t=out:st=1.5:d=1[v0]',
-                '[1:v]fade=t=in:st=0:d=1[v1]',
+                // 将两张图都缩放并填充成 720x1280 (竖屏常用比例)，并添加淡入淡出
+                '[0:v]scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2,fade=t=out:st=1.5:d=1[v0]',
+                '[1:v]scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2,fade=t=in:st=0:d=1[v1]',
                 '[v0][v1]concat=n=2:v=1:a=0,format=yuv420p'
             ])
+            .outputOptions(['-r 25', '-pix_fmt yuv420p', '-movflags +faststart'])
             .on('end', () => resolve(outputFile))
             .on('error', (err) => {
                 console.error('FFmpeg Error:', err.message);
