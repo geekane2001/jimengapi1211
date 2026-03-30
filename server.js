@@ -851,33 +851,43 @@ try {
 }
 
 async function createTransitionVideo(img1, img2, outputFile) {
-    // 检查输入文件是否存在且不为空
     const stats1 = fs.statSync(img1);
     const stats2 = fs.statSync(img2);
+    console.log(`[FFmpeg] Input1: ${img1} (${stats1.size} bytes), Input2: ${img2} (${stats2.size} bytes)`);
+    
     if (stats1.size === 0 || stats2.size === 0) {
         throw new Error(`Input image is empty: ${stats1.size === 0 ? img1 : img2}`);
     }
 
     return new Promise((resolve, reject) => {
-        ffmpeg()
+        let stderrData = '';
+        const command = ffmpeg()
             .input(img1).inputOptions(['-loop 1', '-t 2.5'])
             .input(img2).inputOptions(['-loop 1', '-t 2.5'])
             .complexFilter([
-                // 优化：降低到 540x960 提高处理速度，防止 504 超时
                 '[0:v]scale=540:960:force_original_aspect_ratio=decrease,pad=540:960:(ow-iw)/2:(oh-ih)/2,fade=t=out:st=1.5:d=1,format=yuv420p[v0]',
                 '[1:v]scale=540:960:force_original_aspect_ratio=decrease,pad=540:960:(ow-iw)/2:(oh-ih)/2,fade=t=in:st=0:d=1,format=yuv420p[v1]',
                 '[v0][v1]concat=n=2:v=1:a=0,format=yuv420p'
             ])
             .outputOptions([
-                '-preset ultrafast', // 使用极速预设防止超时
+                '-preset ultrafast',
                 '-r 24',
                 '-pix_fmt yuv420p',
                 '-movflags +faststart'
-            ])
-            .on('end', () => resolve(outputFile))
+            ]);
+
+        command
+            .on('stderr', (stderrLine) => {
+                stderrData += stderrLine + '\n';
+            })
+            .on('end', () => {
+                console.log('[FFmpeg] Synthesis finished successfully');
+                resolve(outputFile);
+            })
             .on('error', (err) => {
-                console.error('FFmpeg Detailed Error:', err.message);
-                reject(err);
+                const detailedError = new Error(`${err.message}\n\nFFmpeg Log:\n${stderrData.slice(-1000)}`);
+                console.error('[FFmpeg] Detailed Error:', detailedError.message);
+                reject(detailedError);
             })
             .save(outputFile);
     });
