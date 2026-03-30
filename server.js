@@ -792,36 +792,122 @@ app.post('/generate', upload.single('image'), async (req, res) => {
   }
 })
 
+// ================= R2 配置 (用于视频存储) =================
+const R2_ACCESS_KEY_ID = "6684b2a5b8f947ba4f6f3ba943d22439";
+const R2_SECRET_ACCESS_KEY = "bd3dce5ac2df30ae34377c9ca5af26fd845abe5fa6ea179ec6810552856ca27f";
+const R2_ENDPOINT = "https://67a7569d0cd89aafb7499f3cf3bc9f73.r2.cloudflarestorage.com";
+const R2_BUCKET = "0926taocantoutu";
+const R2_PUBLIC_PREFIX = "https://pub-c92931353257460eb0beccbf59ef2ad0.r2.dev";
+
+// R2 Node.js 上传函数 (手动 V4 签名)
+async function uploadToR2Node(filePath, fileName, contentType) {
+    const fileBuffer = fs.readFileSync(filePath);
+    const date = new Date();
+    const amzDate = date.toISOString().replace(/[:-]|\.\d{3}/g, "");
+    const dateStamp = amzDate.slice(0, 8);
+    const host = new URL(R2_ENDPOINT).host;
+    const region = "auto";
+    const service = "s3";
+
+    const kDate = crypto.createHmac('sha256', `AWS4${R2_SECRET_ACCESS_KEY}`).update(dateStamp).digest();
+    const kRegion = crypto.createHmac('sha256', kDate).update(region).digest();
+    const kService = crypto.createHmac('sha256', kRegion).update(service).digest();
+    const kSigning = crypto.createHmac('sha256', kService).update('aws4_request').digest();
+
+    const canonicalUri = `/${R2_BUCKET}/${fileName}`;
+    const canonicalHeaders = `content-type:${contentType}\nhost:${host}\nx-amz-content-sha256:UNSIGNED-PAYLOAD\nx-amz-date:${amzDate}\n`;
+    const signedHeaders = "content-type;host;x-amz-content-sha256;x-amz-date";
+    const canonicalRequest = `PUT\n${canonicalUri}\n\n${canonicalHeaders}\n${signedHeaders}\nUNSIGNED-PAYLOAD`;
+    const scope = `${dateStamp}/${region}/${service}/aws4_request`;
+    const stringToSign = `AWS4-HMAC-SHA256\n${amzDate}\n${scope}\n${crypto.createHash('sha256').update(canonicalRequest).digest('hex')}`;
+    const signature = crypto.createHmac('sha256', kSigning).update(stringToSign).digest('hex');
+
+    const authHeader = `AWS4-HMAC-SHA256 Credential=${R2_ACCESS_KEY_ID}/${scope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+
+    await axios.put(`${R2_ENDPOINT}/${R2_BUCKET}/${fileName}`, fileBuffer, {
+        headers: {
+            "Authorization": authHeader,
+            "x-amz-date": amzDate,
+            "x-amz-content-sha256": "UNSIGNED-PAYLOAD",
+            "Content-Type": contentType,
+        }
+    });
+    return `${R2_PUBLIC_PREFIX}/${fileName}`;
+}
+
+// 下载图片工具
+async function downloadImage(url, dest) {
+    const response = await axios({ url, responseType: 'arraybuffer' });
+    fs.writeFileSync(dest, response.data);
+}
+
+// FFmpeg 视频合成工具
+const { exec } = require('child_process');
+async function createTransitionVideo(img1, img2, outputFile) {
+    // 渐变转场：图1显示1s + 1s转场 + 图2显示2s = 总长4s
+    const cmd = `ffmpeg -loop 1 -t 2.5 -i "${img1}" -loop 1 -t 2.5 -i "${img2}" -filter_complex "[0:v]fade=t=out:st=1.5:d=1[v0];[1:v]fade=t=in:st=0:d=1[v1];[v0][v1]concat=n=2:v=1:a=0,format=yuv420p" -y "${outputFile}"`;
+    return new Promise((resolve, reject) => {
+        exec(cmd, (err, stdout, stderr) => {
+            if (err) reject(err);
+            else resolve(outputFile);
+        });
+    });
+}
+
+// 视频生成接口
+app.post('/generate-video', upload.single('image'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: '请上传图片' });
+  const prompt = req.body.prompt;
+  if (!prompt) return res.status(400).json({ error: '请提供提示词' });
+
+  const originalPath = req.file.path;
+  const aiImagePath = path.join('uploads', `ai_${Date.now()}.png`);
+  const videoOutputPath = path.join('uploads', `video_${Date.now()}.mp4`);
+
+  try {
+    const token = getNextToken();
+    // 1. 生成 AI 图片
+    const uri = await uploadImage(originalPath, token);
+    const imageUrls = await generate(uri, prompt, token, BLEND_MODEL_V40);
+    const aiImageUrl = imageUrls[0];
+
+    // 2. 下载 AI 图片到本地以便 FFmpeg 处理
+    await downloadImage(aiImageUrl, aiImagePath);
+
+    // 3. 合成视频
+    await createTransitionVideo(originalPath, aiImagePath, videoOutputPath);
+
+    // 4. 上传视频到 R2
+    const videoUrl = await uploadToR2Node(videoOutputPath, path.basename(videoOutputPath), 'video/mp4');
+
+    // 5. 清理临时文件
+    [originalPath, aiImagePath, videoOutputPath].forEach(p => { if (fs.existsSync(p)) fs.unlinkSync(p); });
+
+    res.json({ status: 'success', videoUrl: videoUrl, imageUrl: aiImageUrl });
+  } catch (e) {
+    console.error('视频处理错误:', e);
+    [originalPath, aiImagePath, videoOutputPath].forEach(p => { if (fs.existsSync(p)) fs.unlinkSync(p); });
+    res.status(500).json({ status: 'error', message: e.message });
+  }
+});
+
+// 健康检查
 app.get('/health', (req, res) => res.send('OK'))
 
 // 图片代理接口 (解决 403 问题)
 app.get('/proxy-image', async (req, res) => {
   const imageUrl = req.query.url
-  if (!imageUrl) {
-    return res.status(400).send('Missing url parameter')
-  }
-
+  if (!imageUrl) return res.status(400).send('Missing url')
   try {
     const response = await axios({
-      method: 'GET',
       url: imageUrl,
       responseType: 'stream',
-      headers: {
-        'Referer': 'https://jimeng.jianying.com/', // 伪造 Referer
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-      },
+      headers: { 'Referer': 'https://jimeng.jianying.com/' }
     })
-
-    // 透传 Content-Type
-    res.set('Content-Type', response.headers['content-type'])
-    // 缓存控制
     res.set('Cache-Control', 'public, max-age=31536000')
-
     response.data.pipe(res)
-  }
-  catch (error) {
-    console.error('Proxy error:', error.message)
-    res.status(500).send('Proxy error')
+  } catch (e) {
+    res.status(500).send(e.message)
   }
 })
 
