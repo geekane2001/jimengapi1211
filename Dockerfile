@@ -1,6 +1,9 @@
 # 使用 Node.js 18 作为基础镜像
 FROM node:18-alpine
 
+# 安装系统依赖 (FFmpeg 用于视频合成)
+RUN apk add --no-cache ffmpeg
+
 # 设置工作目录
 WORKDIR /app
 
