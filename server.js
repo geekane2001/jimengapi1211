@@ -843,6 +843,12 @@ async function downloadImage(url, dest) {
 
 // FFmpeg 视频合成工具
 const ffmpeg = require('fluent-ffmpeg');
+try {
+  const ffmpegStatic = require('ffmpeg-static');
+  if (ffmpegStatic) ffmpeg.setFfmpegPath(ffmpegStatic);
+} catch (e) {
+  console.log('Using system ffmpeg instead of ffmpeg-static');
+}
 
 async function createTransitionVideo(img1, img2, outputFile) {
     return new Promise((resolve, reject) => {
@@ -900,6 +906,33 @@ app.post('/generate-video', upload.single('image'), async (req, res) => {
     console.error('视频处理错误:', e);
     [originalPath, aiImagePath, videoOutputPath].forEach(p => { if (fs.existsSync(p)) fs.unlinkSync(p); });
     res.status(500).json({ status: 'error', message: e.message });
+  }
+});
+
+// 调试专用：纯 FFmpeg 视频合成测试 (不调用即梦 AI)
+app.post('/debug-video', upload.single('image'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: '请上传图片' });
+  
+  const originalPath = req.file.path;
+  const videoOutputPath = path.join('uploads', `debug_${Date.now()}.mp4`);
+
+  try {
+    console.log('--- Debug Video Synthesis Start ---');
+    // 使用同一张图片两次来测试合成功能
+    await createTransitionVideo(originalPath, originalPath, videoOutputPath);
+
+    console.log('--- Uploading Debug Video to R2 ---');
+    const videoUrl = await uploadToR2Node(videoOutputPath, path.basename(videoOutputPath), 'video/mp4');
+
+    // 清理
+    [originalPath, videoOutputPath].forEach(p => { if (fs.existsSync(p)) fs.unlinkSync(p); });
+
+    res.json({ status: 'success', videoUrl: videoUrl });
+  } catch (e) {
+    console.error('Debug Video Error:', e);
+    if (fs.existsSync(originalPath)) fs.unlinkSync(originalPath);
+    if (fs.existsSync(videoOutputPath)) fs.unlinkSync(videoOutputPath);
+    res.status(500).json({ status: 'error', message: e.message, stack: e.stack });
   }
 });
 
