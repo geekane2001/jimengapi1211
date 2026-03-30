@@ -863,12 +863,17 @@ async function createTransitionVideo(img1, img2, outputFile) {
             .input(img1).inputOptions(['-loop 1', '-t 2.5'])
             .input(img2).inputOptions(['-loop 1', '-t 2.5'])
             .complexFilter([
-                // 强制在 scale/pad 之后先转为 yuv420p，确保 concat 时像素格式完全一致
-                '[0:v]scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2,fade=t=out:st=1.5:d=1,format=yuv420p[v0]',
-                '[1:v]scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2,fade=t=in:st=0:d=1,format=yuv420p[v1]',
+                // 优化：降低到 540x960 提高处理速度，防止 504 超时
+                '[0:v]scale=540:960:force_original_aspect_ratio=decrease,pad=540:960:(ow-iw)/2:(oh-ih)/2,fade=t=out:st=1.5:d=1,format=yuv420p[v0]',
+                '[1:v]scale=540:960:force_original_aspect_ratio=decrease,pad=540:960:(ow-iw)/2:(oh-ih)/2,fade=t=in:st=0:d=1,format=yuv420p[v1]',
                 '[v0][v1]concat=n=2:v=1:a=0,format=yuv420p'
             ])
-            .outputOptions(['-r 25', '-pix_fmt yuv420p', '-movflags +faststart'])
+            .outputOptions([
+                '-preset ultrafast', // 使用极速预设防止超时
+                '-r 24',
+                '-pix_fmt yuv420p',
+                '-movflags +faststart'
+            ])
             .on('end', () => resolve(outputFile))
             .on('error', (err) => {
                 console.error('FFmpeg Detailed Error:', err.message);
@@ -880,6 +885,8 @@ async function createTransitionVideo(img1, img2, outputFile) {
 
 // 视频生成接口
 app.post('/generate-video', upload.single('image'), async (req, res) => {
+  // 显式设置 CORS 响应头，防止 504 时由于中间件失效导致的 CORS 报错
+  res.setHeader('Access-Control-Allow-Origin', '*');
   if (!req.file) return res.status(400).json({ error: '请上传图片' });
   const prompt = req.body.prompt;
   if (!prompt) return res.status(400).json({ error: '请提供提示词' });
@@ -917,6 +924,7 @@ app.post('/generate-video', upload.single('image'), async (req, res) => {
 
 // 调试专用：纯 FFmpeg 视频合成测试 (不调用即梦 AI)
 app.post('/debug-video', upload.single('image'), async (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
   if (!req.file) return res.status(400).json({ error: '请上传图片' });
   
   const originalPath = req.file.path;
