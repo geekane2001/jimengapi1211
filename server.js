@@ -865,8 +865,8 @@ async function createTransitionVideo(img1, img2, outputFile) {
             .input(img1).inputOptions(['-loop 1', '-t 2.5'])
             .input(img2).inputOptions(['-loop 1', '-t 2.5'])
             .complexFilter([
-                '[0:v]scale=540:960:force_original_aspect_ratio=decrease,pad=540:960:(ow-iw)/2:(oh-ih)/2,fade=t=out:st=1.5:d=1,format=yuv420p[v0]',
-                '[1:v]scale=540:960:force_original_aspect_ratio=decrease,pad=540:960:(ow-iw)/2:(oh-ih)/2,fade=t=in:st=0:d=1,format=yuv420p[v1]',
+                '[0:v]scale=540:960:force_original_aspect_ratio=decrease,pad=540:960:(ow-iw)/2:(oh-ih)/2,setsar=1,fade=t=out:st=1.5:d=1,format=yuv420p[v0]',
+                '[1:v]scale=540:960:force_original_aspect_ratio=decrease,pad=540:960:(ow-iw)/2:(oh-ih)/2,setsar=1,fade=t=in:st=0:d=1,format=yuv420p[v1]',
                 '[v0][v1]concat=n=2:v=1:a=0,format=yuv420p'
             ])
             .outputOptions([
