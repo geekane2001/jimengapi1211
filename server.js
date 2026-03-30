@@ -841,16 +841,27 @@ async function downloadImage(url, dest) {
     fs.writeFileSync(dest, response.data);
 }
 
-// FFmpeg 视频合成工具
-const { exec } = require('child_process');
+// FFmpeg 视频合成工具 (集成 ffmpeg-static)
+const ffmpeg = require('fluent-ffmpeg');
+const ffmpegPath = require('ffmpeg-static');
+ffmpeg.setFfmpegPath(ffmpegPath);
+
 async function createTransitionVideo(img1, img2, outputFile) {
-    // 渐变转场：图1显示1s + 1s转场 + 图2显示2s = 总长4s
-    const cmd = `ffmpeg -loop 1 -t 2.5 -i "${img1}" -loop 1 -t 2.5 -i "${img2}" -filter_complex "[0:v]fade=t=out:st=1.5:d=1[v0];[1:v]fade=t=in:st=0:d=1[v1];[v0][v1]concat=n=2:v=1:a=0,format=yuv420p" -y "${outputFile}"`;
     return new Promise((resolve, reject) => {
-        exec(cmd, (err, stdout, stderr) => {
-            if (err) reject(err);
-            else resolve(outputFile);
-        });
+        ffmpeg()
+            .input(img1).loop(2.5)
+            .input(img2).loop(2.5)
+            .complexFilter([
+                '[0:v]fade=t=out:st=1.5:d=1[v0]',
+                '[1:v]fade=t=in:st=0:d=1[v1]',
+                '[v0][v1]concat=n=2:v=1:a=0,format=yuv420p'
+            ])
+            .on('end', () => resolve(outputFile))
+            .on('error', (err) => {
+                console.error('FFmpeg Error:', err.message);
+                reject(err);
+            })
+            .save(outputFile);
     });
 }
 
