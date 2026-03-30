@@ -851,21 +851,27 @@ try {
 }
 
 async function createTransitionVideo(img1, img2, outputFile) {
+    // 检查输入文件是否存在且不为空
+    const stats1 = fs.statSync(img1);
+    const stats2 = fs.statSync(img2);
+    if (stats1.size === 0 || stats2.size === 0) {
+        throw new Error(`Input image is empty: ${stats1.size === 0 ? img1 : img2}`);
+    }
+
     return new Promise((resolve, reject) => {
-        // 使用系统原生 ffmpeg (在 Dockerfile 中通过 apk add 安装)
         ffmpeg()
             .input(img1).inputOptions(['-loop 1', '-t 2.5'])
             .input(img2).inputOptions(['-loop 1', '-t 2.5'])
             .complexFilter([
-                // 将两张图都缩放并填充成 720x1280 (竖屏常用比例)，并添加淡入淡出
-                '[0:v]scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2,fade=t=out:st=1.5:d=1[v0]',
-                '[1:v]scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2,fade=t=in:st=0:d=1[v1]',
+                // 强制在 scale/pad 之后先转为 yuv420p，确保 concat 时像素格式完全一致
+                '[0:v]scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2,fade=t=out:st=1.5:d=1,format=yuv420p[v0]',
+                '[1:v]scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2,fade=t=in:st=0:d=1,format=yuv420p[v1]',
                 '[v0][v1]concat=n=2:v=1:a=0,format=yuv420p'
             ])
             .outputOptions(['-r 25', '-pix_fmt yuv420p', '-movflags +faststart'])
             .on('end', () => resolve(outputFile))
             .on('error', (err) => {
-                console.error('FFmpeg Error:', err.message);
+                console.error('FFmpeg Detailed Error:', err.message);
                 reject(err);
             })
             .save(outputFile);
