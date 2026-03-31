@@ -872,14 +872,14 @@ async function createTransitionVideo(img1, img2, outputFile) {
     return new Promise((resolve, reject) => {
         let stderrData = '';
         const command = ffmpeg()
-            .input(img1).inputOptions(['-loop 1', '-t 3']) // 每个阶段增加到 3秒
-            .input(img2).inputOptions(['-loop 1', '-t 3'])
+            .input(img1).inputOptions(['-loop 1', '-t 4.75']) // 4.75秒
+            .input(img2).inputOptions(['-loop 1', '-t 4.75']) // 4.75秒
             .complexFilter([
                 // 极简滤镜：使用 480P 分辨率 (480x854) 以确保低内存环境下不崩溃
                 '[0:v]scale=480:854:force_original_aspect_ratio=increase,crop=480:854,format=yuv420p[v0]',
                 '[1:v]scale=480:854:force_original_aspect_ratio=increase,crop=480:854,format=yuv420p[v1]',
-                // 使用 xfade 实现 1秒淡入淡出
-                '[v0][v1]xfade=transition=fade:duration=1:offset=2,format=yuv420p'
+                // 使用 circleopen 实现 1.5秒的圆形开场转场 (offset = 4.75 - 1.5 = 3.25)
+                '[v0][v1]xfade=transition=circleopen:duration=1.5:offset=3.25,format=yuv420p'
             ])
             .outputOptions([
                 '-preset ultrafast',
