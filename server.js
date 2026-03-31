@@ -875,10 +875,10 @@ async function createTransitionVideo(img1, img2, outputFile) {
             .input(img1).inputOptions(['-loop 1', '-t 3']) // 每个阶段增加到 3秒
             .input(img2).inputOptions(['-loop 1', '-t 3'])
             .complexFilter([
-                // 极简滤镜：仅缩放并对齐，移除极其耗内存的 zoompan
-                '[0:v]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,format=yuv420p[v0]',
-                '[1:v]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,format=yuv420p[v1]',
-                // 使用 xfade 实现 1秒淡入淡出 (offset 为 v0 结束前 1秒，即 2秒处)
+                // 极简滤镜：使用 480P 分辨率 (480x854) 以确保低内存环境下不崩溃
+                '[0:v]scale=480:854:force_original_aspect_ratio=increase,crop=480:854,format=yuv420p[v0]',
+                '[1:v]scale=480:854:force_original_aspect_ratio=increase,crop=480:854,format=yuv420p[v1]',
+                // 使用 xfade 实现 1秒淡入淡出
                 '[v0][v1]xfade=transition=fade:duration=1:offset=2,format=yuv420p'
             ])
             .outputOptions([
