@@ -865,9 +865,12 @@ async function createTransitionVideo(img1, img2, outputFile) {
             .input(img1).inputOptions(['-loop 1', '-t 2.5'])
             .input(img2).inputOptions(['-loop 1', '-t 2.5'])
             .complexFilter([
-                '[0:v]scale=540:960:force_original_aspect_ratio=decrease,pad=540:960:(ow-iw)/2:(oh-ih)/2,setsar=1,fade=t=out:st=1.5:d=1,format=yuv420p[v0]',
-                '[1:v]scale=540:960:force_original_aspect_ratio=decrease,pad=540:960:(ow-iw)/2:(oh-ih)/2,setsar=1,fade=t=in:st=0:d=1,format=yuv420p[v1]',
-                '[v0][v1]concat=n=2:v=1:a=0,format=yuv420p'
+                // 图1：前 2.5秒，带轻微放大效果
+                '[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,zoompan=z=\'min(zoom+0.0015,1.5)\':d=60:s=1080x1920,format=yuv420p[v0]',
+                // 图2：后 2.5秒，带轻微放大效果
+                '[1:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,zoompan=z=\'min(zoom+0.0015,1.5)\':d=60:s=1080x1920,format=yuv420p[v1]',
+                // 使用 xfade 插件实现 1秒转场 (偏移 1.5秒)
+                '[v0][v1]xfade=transition=fade:duration=1:offset=1.5,format=yuv420p'
             ])
             .outputOptions([
                 '-preset ultrafast',
@@ -927,6 +930,39 @@ app.post('/generate-video', upload.single('image'), async (req, res) => {
     res.json({ status: 'success', videoUrl: videoUrl, imageUrl: aiImageUrl });
   } catch (e) {
     console.error('视频处理错误:', e);
+    [originalPath, aiImagePath, videoOutputPath].forEach(p => { if (fs.existsSync(p)) fs.unlinkSync(p); });
+    res.status(500).json({ status: 'error', message: e.message });
+  }
+});
+
+// 纯视频合成接口 (复用已生成的 AI 图片)
+app.post('/synthesize-video', upload.single('image'), async (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  if (!req.file) return res.status(400).json({ error: '请上传原图' });
+  const aiImageUrl = req.body.aiImageUrl;
+  if (!aiImageUrl) return res.status(400).json({ error: '请提供 AI 图片 URL' });
+
+  const originalPath = req.file.path;
+  const aiImagePath = path.join('uploads', `ai_download_${Date.now()}.png`);
+  const videoOutputPath = path.join('uploads', `synth_${Date.now()}.mp4`);
+
+  try {
+    console.log(`--- Synthesize Video Start: AI Image = ${aiImageUrl} ---`);
+    // 1. 下载已生成的 AI 图片
+    await downloadImage(aiImageUrl, aiImagePath);
+
+    // 2. 合成转场视频
+    await createTransitionVideo(originalPath, aiImagePath, videoOutputPath);
+
+    // 3. 上传到 R2
+    const videoUrl = await uploadToR2Node(videoOutputPath, path.basename(videoOutputPath), 'video/mp4');
+
+    // 4. 清理
+    [originalPath, aiImagePath, videoOutputPath].forEach(p => { if (fs.existsSync(p)) fs.unlinkSync(p); });
+
+    res.json({ status: 'success', videoUrl: videoUrl });
+  } catch (e) {
+    console.error('Synthesis Error:', e);
     [originalPath, aiImagePath, videoOutputPath].forEach(p => { if (fs.existsSync(p)) fs.unlinkSync(p); });
     res.status(500).json({ status: 'error', message: e.message });
   }
