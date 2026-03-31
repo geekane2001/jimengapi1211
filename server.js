@@ -21,6 +21,12 @@ app.use(cors())
 app.use(express.json())
 const upload = multer({ dest: 'uploads/' })
 
+// 确保 uploads 目录存在
+const UPLOADS_DIR = path.join(__dirname, 'uploads');
+if (!fs.existsSync(UPLOADS_DIR)) {
+  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+}
+
 // PostgreSQL 连接池
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -837,7 +843,11 @@ async function uploadToR2Node(filePath, fileName, contentType) {
 
 // 下载图片工具
 async function downloadImage(url, dest) {
-    const response = await axios({ url, responseType: 'arraybuffer' });
+    const response = await axios({ 
+      url, 
+      responseType: 'arraybuffer',
+      timeout: 10000 // 10s 超时
+    });
     fs.writeFileSync(dest, response.data);
 }
 
@@ -862,26 +872,33 @@ async function createTransitionVideo(img1, img2, outputFile) {
     return new Promise((resolve, reject) => {
         let stderrData = '';
         const command = ffmpeg()
-            .input(img1).inputOptions(['-loop 1', '-t 2.5'])
-            .input(img2).inputOptions(['-loop 1', '-t 2.5'])
+            .input(img1).inputOptions(['-loop 1', '-t 3']) // 每个阶段增加到 3秒
+            .input(img2).inputOptions(['-loop 1', '-t 3'])
             .complexFilter([
-                // 图1：前 2.5秒，带轻微放大效果
-                '[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,zoompan=z=\'min(zoom+0.0015,1.5)\':d=60:s=1080x1920,format=yuv420p[v0]',
-                // 图2：后 2.5秒，带轻微放大效果
-                '[1:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,zoompan=z=\'min(zoom+0.0015,1.5)\':d=60:s=1080x1920,format=yuv420p[v1]',
-                // 使用 xfade 插件实现 1秒转场 (偏移 1.5秒)
-                '[v0][v1]xfade=transition=fade:duration=1:offset=1.5,format=yuv420p'
+                // 极简滤镜：仅缩放并对齐，移除极其耗内存的 zoompan
+                '[0:v]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,format=yuv420p[v0]',
+                '[1:v]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,format=yuv420p[v1]',
+                // 使用 xfade 实现 1秒淡入淡出 (offset 为 v0 结束前 1秒，即 2秒处)
+                '[v0][v1]xfade=transition=fade:duration=1:offset=2,format=yuv420p'
             ])
             .outputOptions([
                 '-preset ultrafast',
                 '-r 24',
                 '-pix_fmt yuv420p',
+                '-threads 0',
                 '-movflags +faststart'
             ]);
 
         command
+            .on('start', (cmd) => {
+                console.log('[FFmpeg] Started command:', cmd);
+            })
+            .on('progress', (progress) => {
+                console.log(`[FFmpeg] Progress: ${progress.percent?.toFixed(2) || 0}%`);
+            })
             .on('stderr', (stderrLine) => {
                 stderrData += stderrLine + '\n';
+                if (stderrLine.includes('Error')) console.warn('[FFmpeg Stderr]:', stderrLine);
             })
             .on('end', () => {
                 console.log('[FFmpeg] Synthesis finished successfully');
@@ -1017,6 +1034,10 @@ app.get('/proxy-image', async (req, res) => {
 })
 
 const PORT = process.env.PORT || 3000
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`Server listening on port ${PORT}`)
 })
+
+// 设置服务器超时为 5 分钟 (应对大文件合成)
+server.timeout = 300000;
+server.keepAliveTimeout = 300000;
