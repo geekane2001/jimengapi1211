@@ -872,8 +872,8 @@ async function createTransitionVideo(img1, img2, outputFile) {
     return new Promise((resolve, reject) => {
         let stderrData = '';
         const command = ffmpeg()
-            .input(img1).inputOptions(['-loop 1', '-t 4.75']) // 4.75秒
-            .input(img2).inputOptions(['-loop 1', '-t 4.75']) // 4.75秒
+            .input(img1).inputFormat('image2').inputOptions(['-loop 1', '-t 4.75'])
+            .input(img2).inputFormat('image2').inputOptions(['-loop 1', '-t 4.75'])
             .complexFilter([
                 // 极简滤镜：使用 480P 分辨率 (480x854) 以确保低内存环境下不崩溃
                 '[0:v]scale=480:854:force_original_aspect_ratio=increase,crop=480:854,format=yuv420p[v0]',
