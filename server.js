@@ -860,6 +860,26 @@ try {
   console.log('Using system ffmpeg instead of ffmpeg-static');
 }
 
+// 确保上传文件有正确的后缀 (multer 在手机端上传时不带后缀，导致 FFmpeg 无法识别编码器)
+function ensureFileExtension(filePath, mimeType) {
+  const ext = path.extname(filePath);
+  if (ext && ext !== '.') return filePath; // 已有后缀，直接返回
+
+  const mimeMap = {
+    'image/jpeg': '.jpg',
+    'image/png': '.png',
+    'image/webp': '.webp',
+    'image/gif': '.gif',
+    'image/heic': '.heic',
+    'image/heif': '.heif',
+  };
+  const newExt = mimeMap[mimeType] || '.jpg'; // 默认 jpg
+  const newPath = filePath + newExt;
+  fs.renameSync(filePath, newPath);
+  console.log(`[Extension Fix] Renamed ${filePath} -> ${newPath} (mime: ${mimeType})`);
+  return newPath;
+}
+
 async function createTransitionVideo(img1, img2, outputFile) {
     const stats1 = fs.statSync(img1);
     const stats2 = fs.statSync(img2);
@@ -872,8 +892,8 @@ async function createTransitionVideo(img1, img2, outputFile) {
     return new Promise((resolve, reject) => {
         let stderrData = '';
         const command = ffmpeg()
-            .input(img1).inputFormat('image2').inputOptions(['-loop 1', '-t 4.75'])
-            .input(img2).inputFormat('image2').inputOptions(['-loop 1', '-t 4.75'])
+            .input(img1).inputOptions(['-loop 1', '-t 4.75'])
+            .input(img2).inputOptions(['-loop 1', '-t 4.75'])
             .complexFilter([
                 // 极简滤镜：使用 480P 分辨率 (480x854) 以确保低内存环境下不崩溃
                 '[0:v]scale=480:854:force_original_aspect_ratio=increase,crop=480:854,format=yuv420p[v0]',
@@ -921,7 +941,7 @@ app.post('/generate-video', upload.single('image'), async (req, res) => {
   const prompt = req.body.prompt;
   if (!prompt) return res.status(400).json({ error: '请提供提示词' });
 
-  const originalPath = req.file.path;
+  const originalPath = ensureFileExtension(req.file.path, req.file.mimetype);
   const aiImagePath = path.join('uploads', `ai_${Date.now()}.png`);
   const videoOutputPath = path.join('uploads', `video_${Date.now()}.mp4`);
 
@@ -959,7 +979,7 @@ app.post('/synthesize-video', upload.single('image'), async (req, res) => {
   const aiImageUrl = req.body.aiImageUrl;
   if (!aiImageUrl) return res.status(400).json({ error: '请提供 AI 图片 URL' });
 
-  const originalPath = req.file.path;
+  const originalPath = ensureFileExtension(req.file.path, req.file.mimetype);
   const aiImagePath = path.join('uploads', `ai_download_${Date.now()}.png`);
   const videoOutputPath = path.join('uploads', `synth_${Date.now()}.mp4`);
 
@@ -990,7 +1010,7 @@ app.post('/debug-video', upload.single('image'), async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   if (!req.file) return res.status(400).json({ error: '请上传图片' });
   
-  const originalPath = req.file.path;
+  const originalPath = ensureFileExtension(req.file.path, req.file.mimetype);
   const videoOutputPath = path.join('uploads', `debug_${Date.now()}.mp4`);
 
   try {
