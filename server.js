@@ -891,15 +891,13 @@ async function createTransitionVideo(img1, img2, outputFile) {
 
     return new Promise((resolve, reject) => {
         let stderrData = '';
-        // 用 loop 视频滤镜替代 -loop 输入选项 (兼容所有 FFmpeg 版本)
-        // 24fps * 4.75s = 114 帧, loop=113 表示额外循环 113 次 (1原始 + 113 = 114帧)
         const command = ffmpeg()
-            .input(img1)
-            .input(img2)
+            .input(img1).inputOptions(['-loop 1', '-t 4.75'])
+            .input(img2).inputOptions(['-loop 1', '-t 4.75'])
             .complexFilter([
-                // 读取单帧图片 → 通过 loop 滤镜循环成 114 帧 → 设置时间戳 → 缩放裁剪
-                '[0:v]loop=113:1:0,setpts=N/24/TB,scale=480:854:force_original_aspect_ratio=increase,crop=480:854,format=yuv420p[v0]',
-                '[1:v]loop=113:1:0,setpts=N/24/TB,scale=480:854:force_original_aspect_ratio=increase,crop=480:854,format=yuv420p[v1]',
+                // 极简滤镜：使用 480P 分辨率 (480x854) 以确保低内存环境下不崩溃
+                '[0:v]scale=480:854:force_original_aspect_ratio=increase,crop=480:854,format=yuv420p[v0]',
+                '[1:v]scale=480:854:force_original_aspect_ratio=increase,crop=480:854,format=yuv420p[v1]',
                 // 使用 circleopen 实现 1.5秒的圆形开场转场 (offset = 4.75 - 1.5 = 3.25)
                 '[v0][v1]xfade=transition=circleopen:duration=1.5:offset=3.25,format=yuv420p'
             ])
